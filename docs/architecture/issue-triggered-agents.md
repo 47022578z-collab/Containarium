@@ -398,20 +398,13 @@ message DispatchTrackerIssuesResponse {
 
 | RPC | Scope | REST (`google.api.http`) |
 | --- | --- | --- |
-| `SetTrackerRoute` / `ListTrackerRoutes` / `DeleteTrackerRoute` | `tracker:admin` | `PUT/GET/DELETE /v1/tracker/{username}/{connection}/routes[/{scope}]` |
-| `DispatchTrackerIssues` | `tracker:admin` | `POST /v1/tracker/{username}/{connection}/dispatch` |
-| `ListTrackerDispatches` | `tracker:admin` | `GET /v1/tracker/{username}/{connection}/dispatches` |
-| `CreateTrackerIssue` | `tracker:write` (run or operator) | `POST /v1/tracker/{username}/{connection}/issues` |
+| `SetTrackerRoute` / `ListTrackerRoutes` / `DeleteTrackerRoute` | `tracker:admin` | `PUT/GET/DELETE /v1/tracker/connections/{username}/{connection}/routes[/{scope}]` |
+| `DispatchTrackerIssues` | `tracker:admin` | `POST /v1/tracker/connections/{username}/{connection}/dispatch` |
+| `ListTrackerDispatches` | `tracker:admin` | `GET /v1/tracker/connections/{username}/{connection}/dispatches` |
+| `CreateTrackerIssue` | `tracker:write` (run or operator) | `POST /v1/tracker/connections/{username}/{connection}/issues` |
 
 `TrackerPolicy` is set through the existing `SetTrackerConnection`
 (`tracker connect … --label-allow … --auto-chain --max-depth …`).
-
-`routes`, `dispatch`, and `dispatches` above are also connection-name
-literals reserved at `SetTrackerConnection` (#2035) — see
-`docs/architecture/agent-tracker-broker.md`'s "Reserved connection-name /
-username literals" note for why and the full list. Any future
-`/v1/tracker/{username}/{connection}/<verb>` literal added here needs the
-same reservation before it ships.
 
 ### Adapter interface (Go, `internal/tracker/provider.go`)
 
