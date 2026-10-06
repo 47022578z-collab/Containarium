@@ -55,15 +55,16 @@ func runHostHardenBlockMetadata(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", mark, detail)
 
 	if persistBlockMetadata {
-		execPath, err := os.Executable()
-		if err != nil {
-			return fmt.Errorf("failed to determine containarium executable path: %w", err)
-		}
-		if err := hostharden.InstallPersistentUnit(execPath, bridge); err != nil {
-			return fmt.Errorf("failed to install persistent unit: %w", err)
-		}
-		fmt.Fprintf(cmd.OutOrStdout(), "✓ persistent systemd unit installed and enabled for bridge %s\n", bridge)
+	execPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to determine containarium executable path: %w", err)
 	}
+	// Pass the bridge parameter so that each bridge can have its own independent service instance
+	if err := hostharden.InstallPersistentUnit(execPath, bridge); err != nil {
+		return fmt.Errorf("failed to install persistent unit: %w", err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "✓ persistent systemd unit installed and enabled for bridge %s\n", bridge)
+}
 
 	return nil
 }
