@@ -1,5 +1,3 @@
-//go:build !windows && !containarium_client
-
 package cmd
 
 import (
@@ -11,13 +9,13 @@ import (
 	"github.com/footprintai/containarium/internal/hostharden"
 )
 
-var (
-	hostHardenCmd = &cobra.Command{
-		Use:    "hostharden",
-		Short:  "Narrow host-hardening mutations, applied by cloud enroll / pool join and the reboot unit they install",
-		Hidden: true,
-	}
+var hostHardenCmd = &cobra.Command{
+	Use:    "hostharden",
+	Short:  "Narrow host-hardening mutations, applied by cloud enroll / pool join and the reboot unit they install",
+	Hidden: true,
+}
 
+var (
 	persistBlockMetadata bool
 
 	hostHardenBlockMetadataCmd = &cobra.Command{
@@ -40,13 +38,17 @@ func init() {
 	hostHardenBlockMetadataCmd.Flags().BoolVar(&persistBlockMetadata, "persist", false, "Install and enable boot-time re-apply systemd unit")
 }
 
+// runHostHardenBlockMetadata executes the block-metadata command for a given bridge,
+// applying the firewall rule and optionally installing a persistent systemd unit
+// if the --persist flag is provided.
 func runHostHardenBlockMetadata(cmd *cobra.Command, args []string) error {
 	bridge := args[0]
 	applied, detail, err := hostharden.BlockMetadataFromBridge(bridge)
 	if err != nil {
 		return err
 	}
-	mark := "="
+	
+	mark := " "
 	if applied {
 		mark = "✓"
 	}
@@ -60,7 +62,7 @@ func runHostHardenBlockMetadata(cmd *cobra.Command, args []string) error {
 		if err := hostharden.InstallPersistentUnit(execPath, bridge); err != nil {
 			return fmt.Errorf("failed to install persistent unit: %w", err)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "✓ persistent systemd unit installed and enabled\n")
+		fmt.Fprintf(cmd.OutOrStdout(), "✓ persistent systemd unit installed and enabled for bridge %s\n", bridge)
 	}
 
 	return nil
