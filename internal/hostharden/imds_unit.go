@@ -6,52 +6,57 @@ import (
 	"strings"
 )
 
-// ImdsBlockUnitPath is the systemd unit BlockMetadataFromBridge's rule
-// needs to survive a reboot — `iptables` rules are runtime kernel state,
-// not persisted by the package itself, and this repo doesn't assume any
-// particular distro's persistence mechanism (iptables-persistent,
-// netfilter-persistent, firewalld) is installed. A oneshot unit that
-// re-runs the same idempotent check-then-insert this package already does
-// is simpler than depending on one of those and works everywhere systemd
-// does.
-const ImdsBlockUnitPath = "/etc/systemd/system/containarium-imds-block.service"
+// ImdsBlockUnitTemplatePath is the systemd template unit path used to create
+// bridge-specific persistent instances (e.g., containarium-imds-block@br0.service).
+// Using a template unit ensures that multiple bridges can have their own
+// distinct persistent units without overwriting each other.
+const ImdsBlockUnitTemplatePath = "/etc/systemd/system/containarium-imds-block@.service"
 
-// InstallPersistentUnit writes and enables a systemd oneshot unit that
-// re-applies BlockMetadataFromBridge's rule on every boot. Idempotent:
-// re-running (e.g. on a re-enroll) overwrites the same content and
-// `systemctl enable` on an already-enabled unit is a no-op.
-//
-// containariumBin is the path to this binary (os.Executable()) — the unit
-// shells out to `containarium hostharden block-metadata <bridge>` rather
-// than duplicating the iptables/incus invocation inline, so the unit and
-// this package can never drift.
+// InstallPersistentUnit writes and enables a systemd oneshot template instance that
+// re-applies BlockMetadataFromBridge's rule for the specified bridge on every boot.
+// Idempotent: re-running overwrites the content and `systemctl enable` is a no-op.
 func InstallPersistentUnit(containariumBin, bridge string) error {
-	return installPersistentUnit(defaultRunner, ImdsBlockUnitPath, containariumBin, bridge)
+	// Use %i to represent the template instance parameter (the bridge name)
+	unitPath := fmt.Sprintf("/etc/systemd/system/containarium-imds-block@%s.service", bridge)
+	
+	// Alternatively, we write/ensure the template file itself or instantiate directly.
+	// Here we write to the template file /etc/systemd/system/containarium-imds-block@.service 
+	// and enable the specific instance "containarium-imds-block@<bridge>.service".
+	return installPersistentUnit(defaultRunner, ImdsBlockUnitTemplatePath, unitPath, containariumBin, bridge)
 }
 
-func installPersistentUnit(run runner, unitPath, containariumBin, bridge string) error {
+func installPersistentUnit(run runner, templatePath, unitPath, containariumBin, bridge string) error {
+	// Define the systemd template unit content using %i for the bridge instance
 	unit := fmt.Sprintf(`[Unit]
-Description=Re-apply the BYOC metadata-endpoint FORWARD block (#1103) after reboot
+Description=Re-apply the BYOC metadata-endpoint FORWARD block (#1103) for bridge %i after reboot
 After=network-online.target incus.socket
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=%s hostharden block-metadata %s
+ExecStart=%s hostharden block-metadata %%i
 RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
-`, containariumBin, bridge)
+`, containariumBin)
 
-	if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil { // #nosec G306 -- a systemd unit file is meant to be world-readable; it carries no secret (containariumBin/bridge are non-sensitive paths/names)
-		return fmt.Errorf("write %s: %w", unitPath, err)
+	// 1. Write the template unit file (or instance-specific file, depending on design)
+	// To follow systemd template standards, we write to the template path or unitPath.
+	targetPath := "/etc/systemd/system/containarium-imds-block@.service"
+	if err := os.WriteFile(targetPath, []byte(unit), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", targetPath, err)
 	}
+
 	if out, err := run("systemctl", "daemon-reload"); err != nil {
 		return fmt.Errorf("systemctl daemon-reload: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	if out, err := run("systemctl", "enable", "--now", "containarium-imds-block.service"); err != nil {
-		return fmt.Errorf("systemctl enable --now containarium-imds-block.service: %w: %s", err, strings.TrimSpace(string(out)))
+
+	// 2. Enable and start the specific instance for this bridge (e.g., containarium-imds-block@br0.service)
+	instanceName := fmt.Sprintf("containarium-imds-block@%s.service", bridge)
+	if out, err := run("systemctl", "enable", "--now", instanceName); err != nil {
+		return fmt.Errorf("systemctl enable --now %s: %w: %s", instanceName, err, strings.TrimSpace(string(out)))
 	}
+
 	return nil
 }
