@@ -1,3 +1,4 @@
+//go:build !windows && !containarium_client
 package cmd
 
 import (
@@ -9,6 +10,13 @@ import (
 	"github.com/footprintai/containarium/internal/hostharden"
 )
 
+// hostharden is internal plumbing (#1103 fix 3), not a documented top-level
+// workflow: `cloud enroll` and `pool join` invoke BlockMetadataFromBridge
+// directly, and the persistent systemd unit InstallPersistentUnit writes
+// shells out to THIS subcommand (rather than duplicating the iptables/incus
+// invocation inline) so the unit and the enrollment-time call can never
+// drift apart. Hidden from `containarium --help`; still fully usable if an
+// operator needs to re-run it by hand.
 var hostHardenCmd = &cobra.Command{
 	Use:    "hostharden",
 	Short:  "Narrow host-hardening mutations, applied by cloud enroll / pool join and the reboot unit they install",
@@ -55,16 +63,16 @@ func runHostHardenBlockMetadata(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", mark, detail)
 
 	if persistBlockMetadata {
-	execPath, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("failed to determine containarium executable path: %w", err)
+		execPath, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("failed to determine containarium executable path: %w", err)
+		}
+		// Pass the bridge parameter so that each bridge can have its own independent service instance
+		if err := hostharden.InstallPersistentUnit(execPath, bridge); err != nil {
+			return fmt.Errorf("failed to install persistent unit: %w", err)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "✓ persistent systemd unit installed and enabled for bridge %s\n", bridge)
 	}
-	// Pass the bridge parameter so that each bridge can have its own independent service instance
-	if err := hostharden.InstallPersistentUnit(execPath, bridge); err != nil {
-		return fmt.Errorf("failed to install persistent unit: %w", err)
-	}
-	fmt.Fprintf(cmd.OutOrStdout(), "✓ persistent systemd unit installed and enabled for bridge %s\n", bridge)
-}
 
 	return nil
 }
