@@ -48,8 +48,9 @@ type TunnelServer struct {
 	httpsPort int
 
 	// AllowCleartext accepts sessions that open with the cleartext JSON
-	// handshake. NewTunnelServer sets it so existing peers keep working
-	// while they move to the TLS transport; clear it to refuse them.
+	// handshake. It is false by default, so such sessions are refused;
+	// set it to keep older peers working while they move to the TLS
+	// transport.
 	AllowCleartext bool
 
 	// APIBindAddr is the IP the per-backend API listener binds to.
@@ -91,13 +92,12 @@ type proxySet struct {
 // TunnelServer never runs alongside a ConnMux (e.g. in a test).
 func NewTunnelServer(listenAddr string, policy *TokenPolicy, registry *TunnelRegistry, httpsPort int) *TunnelServer {
 	return &TunnelServer{
-		listenAddr:     listenAddr,
-		policy:         policy,
-		registry:       registry,
-		httpsPort:      httpsPort,
-		AllowCleartext: true,
-		APIBindAddr:    DefaultTunnelAPIBindAddr,
-		proxies:        make(map[string]proxySet),
+		listenAddr:  listenAddr,
+		policy:      policy,
+		registry:    registry,
+		httpsPort:   httpsPort,
+		APIBindAddr: DefaultTunnelAPIBindAddr,
+		proxies:     make(map[string]proxySet),
 	}
 }
 
