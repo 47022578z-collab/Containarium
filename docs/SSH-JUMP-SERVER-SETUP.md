@@ -244,7 +244,7 @@ ssh -p 2201 alice@35.x.x.x
 When using the sentinel HA architecture, SSH brute-force protection is handled by **sshpiper** with Containarium's `ssh-ban-plugin`, which preserves the pinned upstream `failtoban` callback accounting and adds authoritative inspection and targeted unban:
 
 - sshpiper sits on the sentinel's port 22 and sees real client IPs
-- After 3 failed auth attempts, the client IP is banned for 1 hour
+- After `ssh_ban_max_failures` failed callbacks (default 100) within the fixed `ssh_ban_duration_seconds` window from first connection (default 300s), the source IP is blocked until that window expires
 - This replaces the previous iptables DNAT approach, which masked real client IPs and caused fail2ban on the spot VM to ban the sentinel itself (blocking all users)
 
 **Verify sshpiper is running:**

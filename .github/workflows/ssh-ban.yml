@@ -16,8 +16,11 @@ on:
     paths:
       - 'internal/sentinel/**'
       - 'internal/cmd/sentinel_ssh_ban_plugin*'
+      - 'proto/containarium/v1/ssh_ban.proto'
       - 'terraform/modules/containarium/**'
       - 'scripts/test-ssh-ban-templates.sh'
+      - 'go.mod'
+      - 'go.sum'
       - '.github/workflows/ssh-ban.yml'
   workflow_dispatch:
 
