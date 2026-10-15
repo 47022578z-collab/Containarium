@@ -314,6 +314,58 @@ journalctl -u ssh -f
 journalctl -u sshpiper -f
 ```
 
+### 6. Live Authorization for Direct Logins (AuthorizedKeysCommand)
+
+A box can be reachable without the sentinel, for example over a private LAN
+or an overlay network straight to the jump host's sshd. Those logins never
+reach the sentinel's SSH authorization check. The jump host can ask the
+daemon itself: sshd's `AuthorizedKeysCommand` runs
+`containarium ssh-authz-keys`, which calls the local daemon's
+`SSHAuthzService.Authorize` and prints the key only on ALLOW (#2527).
+
+**Off by default.** Enable it with the Terraform module variable:
+
+```hcl
+module "containarium" {
+  # ...
+  ssh_authz_keys_command = true   # install the AuthorizedKeysCommand
+  ssh_authz_keys_enforce = false  # audit-only (default) or enforce
+}
+```
+
+The variables apply to both the regular VM (`startup.sh`) and the spot
+backend (`startup-spot.sh`). The startup script then:
+
+- creates `containarium-authz`, a dedicated unprivileged
+  `AuthorizedKeysCommandUser`;
+- mints a JWT carrying only the `ssh:authorize` scope into
+  `/etc/containarium-authz/ssh-authz-keys.token`, readable only by that
+  account (the sentinel secret is never exposed to it). The token lives 24h;
+  `containarium-ssh-authz-token.timer` re-mints it at boot and every 6h.
+  If you set `CONTAINARIUM_MAX_TOKEN_EXPIRY_HOURS` below 24, the token is
+  capped to that, so keep it above 6;
+- starts the daemon with `CONTAINARIUM_SSH_AUTHZ_KEYS_COMMAND=true`
+  (`--ssh-authz-keys-command`), so `/v1/ssh/authorize` accepts that token
+  alongside the sentinel signature. Only a token that carries
+  `ssh:authorize` literally is accepted; the `*` wildcard is not;
+- writes `/etc/ssh/sshd_config.d/containarium-ssh-authz.conf` and validates
+  it with `sshd -t` before restarting sshd:
+
+```
+AuthorizedKeysCommand /usr/local/bin/containariumd ssh-authz-keys --token-file /etc/containarium-authz/ssh-authz-keys.token %u %f %t %k
+AuthorizedKeysCommandUser containarium-authz
+```
+
+When the daemon cannot be asked (down, token refused, timeout), the command
+prints nothing and exits 0 in audit-only mode, 1 with `--enforce`.
+
+**Scope.** LXC jump hosts only; the K8s runtime is not covered. The static
+`authorized_keys` files are left in place because they are the sentinel's
+upstream path, and sshd accepts a key found in either source. A key that is
+still listed in an `authorized_keys` file is therefore accepted on a direct
+login whatever the daemon answers; the command decides for keys that are not
+in the file.
+
 ---
 
 ## Automated Setup with Containarium CLI
