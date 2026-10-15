@@ -75,7 +75,7 @@ func TestControlSocketQueriesEnforcementAndTargetsUnban(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	client := pb.NewSentinelSSHBanServiceClient(conn)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
