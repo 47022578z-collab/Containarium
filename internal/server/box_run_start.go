@@ -136,20 +136,12 @@ func boxRunSpawnScript(sp boxRunSpawn) string {
 	sessionPath := dir + "/" + name + ".session"
 
 	redirect := ">" + q(logPath) + " 2>&1"
-	sessionFromResult := ""
 	if sp.structured {
 		redirect = ">" + q(logPath) + " 2>" + q(stderrPath)
-		// The result object carries the conversation's own session_id.
-		// Written BEFORE the exit sidecar so a reader that sees the run as
-		// exited already sees the id. A missing or malformed id writes
-		// nothing. When the object has one it replaces a literal --resume
-		// sidecar: the engine's reported id is the one to resume next.
-		sessionFromResult = "__sid=$(grep -o '\"session_id\"[[:space:]]*:[[:space:]]*\"[A-Za-z0-9._-]*\"' " + q(logPath) +
-			` 2>/dev/null | head -n 1 | sed 's/.*:[[:space:]]*"\(.*\)"$/\1/'); ` +
-			"case \"$__sid\" in ''|.|..) ;; *) printf '%s' \"$__sid\" > " + q(sessionPath+".tmp") +
-			" 2>/dev/null && mv -f " + q(sessionPath+".tmp") + " " + q(sessionPath) + ";; esac; "
+		// The result object carries the conversation's own session_id; the
+		// daemon decodes it (top-level key only) when listing the run.
 	}
-	inner := "( " + sp.command + " ) " + redirect + "; __cx=$?; " + sessionFromResult +
+	inner := "( " + sp.command + " ) " + redirect + "; __cx=$?; " +
 		"printf '%s %s' \"$__cx\" \"$(date -u +%s)\" > " + q(exitPath+".tmp") + " 2>/dev/null && " +
 		"mv -f " + q(exitPath+".tmp") + " " + q(exitPath) + "; exit $__cx"
 
@@ -162,7 +154,7 @@ func boxRunSpawnScript(sp boxRunSpawn) string {
 		script += ": > " + q(stderrPath) + "\n" +
 			"chmod 600 " + q(stderrPath) + " 2>/dev/null || true\n"
 	}
-	script += "rm -f " + q(exitPath) + " " + q(sessionPath) + "\n" +
+	script += "rm -f " + q(exitPath) + " " + q(sessionPath) + " " + q(sessionPath+".snap") + "\n" +
 		"cd " + q(sp.home) + " 2>/dev/null || true\n"
 	if sp.prelaunch != "" {
 		script += sp.prelaunch + "\n"
@@ -210,7 +202,7 @@ func boxRunRotateScript(dir, name string, startedAtUnix int64) string {
 	q := shellSingleQuote
 	suffix := "." + strconv.FormatInt(startedAtUnix, 10)
 	var b strings.Builder
-	for _, ext := range []string{"json", "log", "stderr.log", "exit", "session"} {
+	for _, ext := range []string{"json", "log", "stderr.log", "exit", "session", "session.snap"} {
 		from := q(dir + "/" + name + "." + ext)
 		to := q(dir + "/" + name + suffix + "." + ext)
 		fmt.Fprintf(&b, "[ -e %s ] && mv -f %s %s 2>/dev/null; ", from, from, to)
@@ -276,6 +268,10 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	}
 	if req.GetRunName() != "" && !validRunPathID(req.GetRunName()) {
 		return nil, status.Errorf(codes.InvalidArgument, "run_name must match %s and not be . or ..", runIDPattern.String())
+	}
+	if req.GetRunName() != "" && boxRunNameCollidesWithDerivedFile(req.GetRunName()) {
+		return nil, status.Error(codes.InvalidArgument,
+			"run_name must not end in \".stderr\" or in \".<digits>\" (those collide with a run's derived files and rotated-aside runs)")
 	}
 	if err := s.authorizeBoxRuns(ctx, req.GetUsername()); err != nil {
 		return nil, err
@@ -348,18 +344,18 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		return nil, status.Errorf(codes.FailedPrecondition, "%s on %q: %v", engine.CodeConfigPath, req.GetUsername(), err)
 	}
 
+	if req.GetStructuredOutput() && eng.Name() != engine.NameClaude {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"structured_output is only supported for the %s engine; %s on %q selects %s",
+			engine.NameClaude, engine.CodeConfigPath, req.GetUsername(), eng.Name())
+	}
+
 	// Every precondition has now passed — safe to mutate. Only now does a
 	// finished prior run under this name get rotated aside.
 	if rotate {
 		if _, err := startExec(box, req.GetUsername(), boxRunRotateScript(dir, name, collision.GetStartedAt().AsTime().Unix())); err != nil {
 			return nil, status.Errorf(codes.Unavailable, "rotate finished run %q on %q: %v", name, req.GetUsername(), err)
 		}
-	}
-
-	if req.GetStructuredOutput() && eng.Name() != engine.NameClaude {
-		return nil, status.Errorf(codes.FailedPrecondition,
-			"structured_output is only supported for the %s engine; %s on %q selects %s",
-			engine.NameClaude, engine.CodeConfigPath, req.GetUsername(), eng.Name())
 	}
 
 	command := eng.RunCommand(req.GetPrompt(), false, req.GetContinueSession(), req.GetSessionId())
@@ -443,4 +439,24 @@ const (
 // daemonCapabilities is the list GetSystemInfo reports.
 func daemonCapabilities() []string {
 	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput}
+}
+
+// boxRunNameCollidesWithDerivedFile reports whether name would alias a file or
+// run the daemon derives from another run: "<n>.stderr" makes "<n>.stderr.json"
+// / ".log" look like <n>'s stderr log, and "<n>.<digits>" is the rotation
+// suffix of a finished run named <n>.
+func boxRunNameCollidesWithDerivedFile(name string) bool {
+	if strings.HasSuffix(name, ".stderr") {
+		return true
+	}
+	i := strings.LastIndex(name, ".")
+	if i < 0 || i == len(name)-1 {
+		return false
+	}
+	for _, c := range name[i+1:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }

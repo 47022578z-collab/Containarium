@@ -221,7 +221,9 @@ type StartBoxRunRequest struct {
 	ContinueSession bool `protobuf:"varint,4,opt,name=continue_session,json=continueSession,proto3" json:"continue_session,omitempty"`
 	// Names this run exactly <run_name> instead of the default (the session id
 	// when resuming, else "code"). Must match [A-Za-z0-9._-]{1,128} and not be
-	// "." or ".."; anything else is INVALID_ARGUMENT. The same collision rules
+	// "." or ".."; anything else is INVALID_ARGUMENT, as is a name ending in
+	// ".stderr" or in ".<digits>" (those alias a run's stderr log and the
+	// rotation suffix of a finished run). The same collision rules
 	// apply to the name as to any other: a finished run under it is rotated
 	// aside, a RUNNING or UNKNOWN one is FAILED_PRECONDITION. A run with an
 	// explicit name never collides with the default "code" run, so a caller
@@ -230,14 +232,23 @@ type StartBoxRunRequest struct {
 	// previous naming. Capability "box_run_name" in SystemInfo.capabilities.
 	RunName string `protobuf:"bytes,5,opt,name=run_name,json=runName,proto3" json:"run_name,omitempty"`
 	// When true the engine runs with `--output-format json` (Claude Code only;
-	// any other engine is FAILED_PRECONDITION). The run's log
-	// (<run_name>.log) is then exactly the engine's one JSON result object
-	// (type, subtype, is_error, result, session_id, usage, ...), with stderr
-	// kept apart in <run_name>.stderr.log. The result's session_id is written
-	// to the run's session sidecar once the run exits, so BoxRun.session_id is
-	// set from it (no directory discovery). The object appears when the run
-	// ends: the log is empty while it runs. Default false leaves the plain-text
-	// behaviour byte-for-byte unchanged. Capability
+	// any other engine is FAILED_PRECONDITION, before anything on the box is
+	// touched). The run's log (<run_name>.log) is then exactly the engine's one
+	// JSON result object (type, subtype, is_error, result, session_id, usage,
+	// ...); stderr is kept apart in /tmp/agent-box/<run_name>.stderr.log, which
+	// TailBoxRunLog does not serve. Once the run has exited, ListBoxRuns reads
+	// the object and reports its TOP-LEVEL session_id as BoxRun.session_id
+	// (nested keys are ignored; truncated or invalid JSON, or an object over
+	// 1 MiB, yields no id). The object appears when the run ends: the log is
+	// empty while it runs. Default false leaves the plain-text behaviour
+	// unchanged.
+	//
+	// NORMATIVE: a caller that needs the session id reliably MUST set
+	// structured_output. Without it BoxRun.session_id of a fresh run is
+	// best-effort directory discovery (exactly one new transcript must appear
+	// while the run lives; a member's interactive session or another run
+	// starting meanwhile makes it ambiguous) and may be missing. A
+	// continue_session run gets no discovered id at all. Capability
 	// "box_run_structured_output" in SystemInfo.capabilities.
 	StructuredOutput bool `protobuf:"varint,6,opt,name=structured_output,json=structuredOutput,proto3" json:"structured_output,omitempty"`
 	unknownFields    protoimpl.UnknownFields

@@ -133,7 +133,7 @@ func withShortDiscoveryBudget(t *testing.T, attempts int) {
 func TestSessionDiscovery_AdoptsOnlyAFileCreatedAfterTheSnapshot(t *testing.T) {
 	for _, n := range []Name{NameClaude, NamePi} {
 		t.Run(string(n), func(t *testing.T) {
-			withShortDiscoveryBudget(t, 25)
+			withShortDiscoveryBudget(t, 10)
 			f := newDiscoveryFixture(t, n)
 			f.seed("previous-conversation", time.Now().Add(-time.Hour))
 			f.prepare()
@@ -202,7 +202,7 @@ func TestSessionDiscovery_TwoNewFilesIsAmbiguousAndAdoptsNeither(t *testing.T) {
 // starts (snapshots) after run A's transcript exists, so B must pick its own
 // file, not A's, and A (which saw only its own file) picks A's.
 func TestSessionDiscovery_ConcurrentRunsDoNotAdoptEachOthersTranscript(t *testing.T) {
-	withShortDiscoveryBudget(t, 25)
+	withShortDiscoveryBudget(t, 10)
 	a := newDiscoveryFixture(t, NameClaude)
 	b := &discoveryFixture{t: t, engine: NameClaude, home: a.home, cwd: a.cwd, dir: a.dir, suffix: a.suffix, sidecar: filepath.Join(t.TempDir(), "b.session")}
 
@@ -238,7 +238,7 @@ func TestSessionDiscovery_NoSnapshotFailsClosed(t *testing.T) {
 // TestSessionDiscovery_ClaudeIgnoresNonTranscriptEntries: only *.jsonl
 // entries count (the project directory also holds per-session directories).
 func TestSessionDiscovery_ClaudeIgnoresNonTranscriptEntries(t *testing.T) {
-	withShortDiscoveryBudget(t, 25)
+	withShortDiscoveryBudget(t, 10)
 	f := newDiscoveryFixture(t, NameClaude)
 	f.prepare()
 	f.poll()
@@ -248,6 +248,70 @@ func TestSessionDiscovery_ClaudeIgnoresNonTranscriptEntries(t *testing.T) {
 	if got, ok := f.waitSettled(); !ok || got != "real-session" {
 		t.Errorf("sidecar = %q (written=%v), want real-session", got, ok)
 	}
+}
+
+// TestSessionDiscovery_MembersSessionFirstThenOwnIsAmbiguous is the
+// interleaved ordering: a member's interactive transcript appears before this
+// run's own. The poll must NOT adopt the first one it sees; with two new
+// entries at the end nothing is written.
+func TestSessionDiscovery_MembersSessionFirstThenOwnIsAmbiguous(t *testing.T) {
+	for _, n := range []Name{NameClaude, NamePi} {
+		t.Run(string(n), func(t *testing.T) {
+			withShortDiscoveryBudget(t, 10)
+			f := newDiscoveryFixture(t, n)
+			f.prepare()
+			f.poll()
+			time.Sleep(300 * time.Millisecond)
+			f.seed("members-interactive", time.Now())
+			time.Sleep(700 * time.Millisecond)
+			f.seed("this-runs-transcript", time.Now())
+			if got, ok := f.waitSettled(); ok {
+				t.Errorf("adopted %q although two new transcripts appeared", got)
+			}
+		})
+	}
+}
+
+// TestSessionDiscovery_OwnFirstThenMembersSessionIsAmbiguous: the opposite
+// order is equally undecidable from the directory (documented as ambiguous).
+func TestSessionDiscovery_OwnFirstThenMembersSessionIsAmbiguous(t *testing.T) {
+	withShortDiscoveryBudget(t, 10)
+	f := newDiscoveryFixture(t, NameClaude)
+	f.prepare()
+	f.poll()
+	time.Sleep(300 * time.Millisecond)
+	f.seed("this-runs-transcript", time.Now())
+	time.Sleep(700 * time.Millisecond)
+	f.seed("members-interactive", time.Now())
+	if got, ok := f.waitSettled(); ok {
+		t.Errorf("adopted %q although two new transcripts appeared", got)
+	}
+}
+
+// TestSessionDiscovery_StopsEarlyWhenTheRunHasExited: the exit sidecar ends
+// the wait, so a short run is evaluated promptly rather than after the budget.
+func TestSessionDiscovery_StopsEarlyWhenTheRunHasExited(t *testing.T) {
+	withShortDiscoveryBudget(t, 300) // 60 s if the exit sidecar were ignored
+	f := newDiscoveryFixture(t, NameClaude)
+	f.prepare()
+	f.seed("only-new", time.Now())
+	writeAt(t, strings.TrimSuffix(f.sidecar, ".session")+".exit", time.Now())
+	start := time.Now()
+	f.poll()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if data, err := os.ReadFile(f.sidecar); err == nil {
+			if strings.TrimSpace(string(data)) != "only-new" {
+				t.Fatalf("sidecar = %q", data)
+			}
+			if time.Since(start) > 3*time.Second {
+				t.Errorf("took %v; exit sidecar was ignored", time.Since(start))
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Error("sidecar not written after the run exited")
 }
 
 // TestSessionDiscoveryPrepareCommand_UnknownEngine: same fail-closed rule as

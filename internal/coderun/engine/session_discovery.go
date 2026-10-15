@@ -47,11 +47,15 @@ import (
 //     snapshot file BEFORE the engine is launched.
 //  2. SessionDiscoveryBackgroundCommand polls the directory and considers
 //     only entries absent from that snapshot. Exactly one new entry is the
-//     run's session; the poll then writes the sidecar. More than one new
-//     entry means another conversation started in the same window (a
-//     concurrent run or a member's interactive session): which one is ours
+//     run's session. The poll runs the whole budget (it must not stop at the
+//     first new entry: that may be a member's interactive session that began
+//     before this run's engine wrote its own file) and writes the sidecar
+//     only if exactly one new entry exists at the end. More than one new
+//     entry means another conversation started meanwhile (a concurrent run or
+//     a member's interactive session, in either order): which one is ours
 //     cannot be told from the directory, so NOTHING is written. No new entry
-//     within the budget also writes nothing. It never falls back to an older
+//     within the budget also writes nothing. A --continue run gets no id
+//     here at all: it appends to an existing file, which is never new. It never falls back to an older
 //     file; an absent sidecar is the safe outcome.
 //
 // A snapshot (rather than "modified after a marker") is used because an
@@ -123,12 +127,14 @@ func sessionEntryFilter(trimSuffix string) string {
 // SessionDiscoveryBackgroundCommand renders a POSIX shell command that
 // BACKGROUNDS (and detaches via setsid, so it outlives the exec call that
 // launched it) a short poll loop: look for a session entry that is NOT in the
-// snapshot SessionDiscoveryPrepareCommand took, and once exactly one appears,
-// write its id to sidecarPath atomically (temp-then-rename, the same pattern
-// internal/agentbox's exit sidecar uses) and stop. Gives up silently after
-// sessionDiscoveryAttempts tries, and stops without writing when more than
-// one new entry shows up (see the package comment) — an absent sidecar is a
-// normal, expected outcome, never an error the caller needs to see.
+// snapshot SessionDiscoveryPrepareCommand took. It waits out the whole budget
+// (or until the run's sibling <name>.exit sidecar exists), then, only if
+// EXACTLY ONE new entry exists, writes its id to sidecarPath atomically
+// (temp-then-rename). No new entry, or several (a member's session and this
+// run's both appeared, in either order), writes nothing — an absent sidecar
+// is a normal, expected outcome, never an error the caller needs to see.
+// Plain-mode ids are best-effort: callers needing one reliably must use
+// structured output.
 //
 // ok=false (empty command) means this engine exposes no discoverable session
 // id at all; callers skip running anything.
@@ -141,20 +147,26 @@ func SessionDiscoveryBackgroundCommand(n Name, home, cwd, sidecarPath string) (c
 	qsidecar := shellQuoteSingle(sidecarPath)
 	qtmp := shellQuoteSingle(sidecarPath + ".tmp")
 	qsnap := shellQuoteSingle(SessionSnapshotPath(sidecarPath))
+	qexit := shellQuoteSingle(strings.TrimSuffix(sidecarPath, ".session") + ".exit")
 
 	// New entries = listing minus snapshot. An unreadable/absent snapshot
 	// means we cannot tell old from new, so fail closed (write nothing).
 	// basename then strips trimSuffix when the engine's file name carries one
 	// (pi's own session file name already IS the id).
+	// The loop does NOT stop at the first new entry: a member's own
+	// interactive session (or any other process) may create a transcript
+	// before this run's engine writes its own, and adopting the first one
+	// would hand out somebody else's conversation. It runs the whole budget,
+	// or until the run's exit sidecar exists, and only then requires EXACTLY
+	// ONE new entry. Several (or none) writes nothing, in either ordering.
 	body := "[ -f " + qsnap + " ] || exit 0; " +
-		"i=0; while [ $i -lt " + strconv.Itoa(sessionDiscoveryAttempts) + " ]; do " +
+		"i=0; while [ $i -lt " + strconv.Itoa(sessionDiscoveryAttempts) + " ] && [ ! -e " + qexit + " ]; do " +
+		"sleep " + sleepArg() + "; i=$((i+1)); done; " +
 		"new=$(ls -1 " + qdir + " 2>/dev/null" + sessionEntryFilter(trimSuffix) + " | grep -vxF -f " + qsnap + "); " +
-		"if [ -n \"$new\" ]; then " +
-		"if [ $(printf '%s\\n' \"$new\" | wc -l) -ne 1 ]; then break; fi; " +
+		"[ -n \"$new\" ] || exit 0; " +
+		"[ $(printf '%s\\n' \"$new\" | wc -l) -eq 1 ] || exit 0; " +
 		"b=$(basename \"$new\"); id=\"${b%" + trimSuffix + "}\"; " +
-		"printf '%s' \"$id\" > " + qtmp + " 2>/dev/null && mv -f " + qtmp + " " + qsidecar + "; " +
-		"break; fi; " +
-		"i=$((i+1)); sleep " + sleepArg() + "; done"
+		"printf '%s' \"$id\" > " + qtmp + " 2>/dev/null && mv -f " + qtmp + " " + qsidecar
 
 	// setsid + redirected stdio + disown-by-construction: this must survive
 	// the parent script (or SSH session, or exec call) returning, exactly

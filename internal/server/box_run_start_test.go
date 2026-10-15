@@ -647,7 +647,7 @@ func TestStartBoxRun_StructuredOutput(t *testing.T) {
 	u := newFakeBoxUser(t, 0, 0)
 	u.writeFakeClaude(t, `case " $* " in *" --output-format json "*) ;; *) echo "missing flag: $*" >&2; exit 9;; esac
 echo "a warning" >&2
-printf '%s' '{"type":"result","subtype":"success","is_error":false,"result":"say \"session_id\":\"evil\" ok","session_id":"7b0d2e5c-1111-4222-8333-444455556666","usage":{"input_tokens":1}}'
+printf '%s' '{"type":"result","subtype":"success","is_error":false,"permission_denials":[{"tool_input":{"session_id":"nested-evil"}}],"result":"say \"session_id\":\"evil\" ok","session_id":"7b0d2e5c-1111-4222-8333-444455556666","usage":{"input_tokens":1}}'
 `)
 	s, dir, _ := boxRunStartServer(t, u)
 	ctx := tenantCtx("alice")

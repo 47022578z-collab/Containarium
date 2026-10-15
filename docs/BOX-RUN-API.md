@@ -16,6 +16,8 @@ A caller that cannot rely on `code` being free sets `run_name`:
 - The run is named exactly that. The name must match `[A-Za-z0-9._-]{1,128}`
   and not be `.` or `..`; anything else is `INVALID_ARGUMENT` before anything
   runs on the box.
+- A name ending in `.stderr` or in `.<digits>` is `INVALID_ARGUMENT`: it would
+  alias a run's stderr log or the rotation suffix of a finished run.
 - The usual rules apply to that name: a finished run of the same name is
   rotated aside, a `RUNNING` or `UNKNOWN` one is `FAILED_PRECONDITION`.
 - A named run never collides with the default `code` run, so a member's own
@@ -31,32 +33,49 @@ The CLI counterpart is the existing `containarium code run <box> --name <name>`
 ## Structured output: `structured_output`
 
 With `structured_output: true` (Claude Code boxes only; other engines are
-`FAILED_PRECONDITION`) the engine runs with `--output-format json`:
+`FAILED_PRECONDITION`, refused before anything on the box is touched, so a
+finished run of the same name is not rotated) the engine runs with
+`--output-format json`:
 
 | File | Content |
 | --- | --- |
 | `<run_name>.log` | Exactly the engine's one JSON result object: `type` (`result`), `subtype` (for example `success` or an error subtype), `is_error`, `result` (the final text), `session_id`, `usage`, and the engine's other result fields. |
-| `<run_name>.stderr.log` | The engine's stderr, kept apart so the main log stays valid JSON. |
+| `/tmp/agent-box/<run_name>.stderr.log` | The engine's stderr, kept apart so the main log stays valid JSON. It is not served by `TailBoxRunLog` (no RPC reads it yet); read it on the box. |
 
 The object is written when the run ends; while it runs the main log is empty.
 `TailBoxRunLog` and `containarium code logs` return the log as opaque bytes, so
-they return the object verbatim. When the run exits, the object's `session_id`
-is written to the run's session sidecar, before the exit record, so
-`BoxRun.session_id` is set as soon as the run is `EXITED` (it replaces the
-literal `session_id` of a resumed run, since the engine's reported id is the
-one to resume next). If the object has no usable `session_id` the field stays
-empty. The default (`false`) leaves plain-text behaviour unchanged.
+they return the object verbatim. The run record's capture mode is still
+`combined` ("plain text, not framed"): the name predates this option and does
+not mean stdout and stderr are merged here. For a structured run the log holds
+stdout only; stderr is in the separate file above.
 
-## Session id of a fresh run
+`BoxRun.session_id` is decoded by the daemon, not by a shell script: once the
+run has exited, `ListBoxRuns` parses the log with a JSON decoder and uses ONLY
+the object's top-level `session_id` (a `session_id` key nested inside, say, a
+tool input is ignored) provided it is a safe identifier. It takes precedence
+over the literal id of a resumed run. A truncated or invalid object, a missing
+id, or an object larger than 1 MiB yields no id. The default (`false`) leaves
+plain-text behaviour unchanged.
+
+## Session id of a fresh plain-text run (best effort)
+
+**A caller that needs the session id reliably MUST use `structured_output`.**
+The plain-text id is best-effort and may be missing.
 
 Without `structured_output`, the id of a fresh run is found by looking at the
-engine's session directory. To avoid adopting an older conversation, the daemon
-lists that directory just before launching the engine, then polls (up to about
-12 seconds) for an entry that was not in the listing. Exactly one new entry is
-the run's session. No new entry, or more than one (another conversation started
-in the same window), leaves `session_id` empty; an older entry is never used as
-a fallback. A caller that needs the id reliably should use `structured_output`.
-A resumed run's id is the `session_id` it was started with.
+engine's session directory. The daemon lists that directory just before
+launching the engine, then polls for the run's whole budget (about 12
+seconds, or until the run exits, whichever is first) and only then looks for
+entries that were not in the listing. If there is exactly one, it is the run's
+session id. If there are none, or more than one (a member's interactive
+session, or another run, created a transcript meanwhile, in either order),
+`session_id` stays empty; an older entry is never used as a fallback. The
+poll deliberately does not stop at the first new entry, since that may belong
+to somebody else.
+
+A run started with `continue_session` gets no id from discovery at all (it
+appends to an existing file, which is never new). A resumed run's id is the
+`session_id` it was started with.
 
 ## Feature detection
 
