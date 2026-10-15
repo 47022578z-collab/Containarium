@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **A fresh run no longer adopts the previous conversation's session id** (cloud#2633). Session discovery took the newest file in the engine's session directory and polled immediately, before the new run had created its own, so `session_id` usually named the previous conversation and a later `--resume` would continue the wrong one. Discovery now lists the directory just before the engine starts and adopts only an entry created afterwards: exactly one new entry is the run's session; none within the budget (now about 12 s), or more than one, leaves the id empty; an older entry is never used. This applies to the daemon, `containarium code run` and the MCP `code_run` tool. `code run --session` now records the given id as the session sidecar directly.
+- **macOS 11 client builds (best effort).** Each release now also publishes `containarium-darwin-amd64-macos11` and
+  `containarium-darwin-arm64-macos11`. Stock Go 1.25+ only targets macOS 12, so these are built by
+  `scripts/build-macos11.sh` with a privately patched toolchain (Go 1.24's certificate verification and a macOS 11.0
+  minimum version). They are published beside, never instead of, the normal macOS assets. CI can only verify the build,
+  not run it on macOS 11.
 
 ## [0.103.3] - 2026-10-13
 
