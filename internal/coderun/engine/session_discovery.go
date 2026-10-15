@@ -37,16 +37,39 @@ import (
 // convention Anthropic tooling uses elsewhere — but still not a substitute
 // for testing it against Claude Code itself.
 
+// A FRESH run adopts only a session file CREATED BY THAT RUN. Taking "the
+// newest file" is wrong: the engine has not written its own file yet when
+// discovery starts, so the newest file is the previous conversation (the
+// member's own, or the previous run's), and a later --resume would then
+// continue somebody else's conversation. So discovery works from a snapshot:
+//
+//  1. SessionDiscoveryPrepareCommand lists the session directory into a
+//     snapshot file BEFORE the engine is launched.
+//  2. SessionDiscoveryBackgroundCommand polls the directory and considers
+//     only entries absent from that snapshot. Exactly one new entry is the
+//     run's session; the poll then writes the sidecar. More than one new
+//     entry means another conversation started in the same window (a
+//     concurrent run or a member's interactive session): which one is ours
+//     cannot be told from the directory, so NOTHING is written. No new entry
+//     within the budget also writes nothing. It never falls back to an older
+//     file; an absent sidecar is the safe outcome.
+//
+// A snapshot (rather than "modified after a marker") is used because an
+// older conversation that is still being appended to would pass a
+// modification-time test.
+
 // sessionDiscoveryAttempts * sessionDiscoveryIntervalMS bounds how long the
-// background poll looks for a newly-created session file before giving up.
-// Both paths that start a run (the CLI's SSH-driven `code run` and the
-// daemon's StartBoxRun) run this as a DETACHED background job, never in the
-// foreground — so this budget only delays when `session_id` first appears on
-// `code runs`/`BoxRun`, never the run's own startup or output.
-const (
-	sessionDiscoveryAttempts   = 20
-	sessionDiscoveryIntervalMS = 200
-)
+// background poll looks for the run's newly-created session file before
+// giving up (60 x 200 ms = 12 s: the engine creates its transcript only after
+// it has started and sent its first message, which is slower than a bare
+// process spawn). Both paths that start a run (the CLI's SSH-driven `code
+// run` and the daemon's StartBoxRun) run this as a DETACHED background job,
+// never in the foreground, so the budget only delays when `session_id` first
+// appears on `code runs`/`BoxRun`, never the run's own startup or output.
+// A var only so tests can shorten it.
+var sessionDiscoveryAttempts = 60
+
+const sessionDiscoveryIntervalMS = 200
 
 // ClaudeProjectSlug renders Claude Code's own project-directory name for cwd:
 // every "/" replaced with "-". Exported so both the discovery script below
@@ -69,15 +92,43 @@ func sessionSearchDir(n Name, home, cwd string) (dir, trimSuffix string, ok bool
 	}
 }
 
+// SessionSnapshotPath is where the pre-launch directory snapshot for the run
+// whose session sidecar is sidecarPath lives.
+func SessionSnapshotPath(sidecarPath string) string { return sidecarPath + ".snap" }
+
+// SessionDiscoveryPrepareCommand renders a POSIX shell command that records
+// which session entries already exist, to SessionSnapshotPath(sidecarPath).
+// It MUST run before the engine is launched; entries that appear afterwards
+// are the candidates for this run's session. ok=false means the engine
+// exposes no discoverable session id.
+func SessionDiscoveryPrepareCommand(n Name, home, cwd, sidecarPath string) (cmd string, ok bool) {
+	dir, trimSuffix, ok := sessionSearchDir(n, home, cwd)
+	if !ok {
+		return "", false
+	}
+	snap := SessionSnapshotPath(sidecarPath)
+	return "{ ls -1 " + shellQuoteSingle(dir) + " 2>/dev/null" + sessionEntryFilter(trimSuffix) + " || true; } > " +
+		shellQuoteSingle(snap) + " 2>/dev/null || true", true
+}
+
+// sessionEntryFilter keeps only entries that are session files (Claude Code's
+// project directory also holds per-session sub-directories).
+func sessionEntryFilter(trimSuffix string) string {
+	if trimSuffix == "" {
+		return ""
+	}
+	return " | grep " + shellQuoteSingle(strings.ReplaceAll(trimSuffix, ".", "\\.")+"$")
+}
+
 // SessionDiscoveryBackgroundCommand renders a POSIX shell command that
 // BACKGROUNDS (and detaches via setsid, so it outlives the exec call that
-// launched it) a short poll loop: look for the newest file under the
-// engine's session directory, and once one appears, write its id to
-// sidecarPath atomically (temp-then-rename, the same pattern
+// launched it) a short poll loop: look for a session entry that is NOT in the
+// snapshot SessionDiscoveryPrepareCommand took, and once exactly one appears,
+// write its id to sidecarPath atomically (temp-then-rename, the same pattern
 // internal/agentbox's exit sidecar uses) and stop. Gives up silently after
-// sessionDiscoveryAttempts tries — an absent sidecar is a normal, expected
-// outcome (a run whose engine exposes no session, or one discovery simply
-// didn't win the race for), never an error the caller needs to see.
+// sessionDiscoveryAttempts tries, and stops without writing when more than
+// one new entry shows up (see the package comment) — an absent sidecar is a
+// normal, expected outcome, never an error the caller needs to see.
 //
 // ok=false (empty command) means this engine exposes no discoverable session
 // id at all; callers skip running anything.
@@ -89,15 +140,18 @@ func SessionDiscoveryBackgroundCommand(n Name, home, cwd, sidecarPath string) (c
 	qdir := shellQuoteSingle(dir)
 	qsidecar := shellQuoteSingle(sidecarPath)
 	qtmp := shellQuoteSingle(sidecarPath + ".tmp")
+	qsnap := shellQuoteSingle(SessionSnapshotPath(sidecarPath))
 
-	// `ls -t` newest-first; `head -1` the newest. basename then strips
-	// trimSuffix (e.g. ".jsonl") when the engine's file name carries one —
-	// pi's own session file name already IS the id, so trimSuffix is empty
-	// there and the parameter expansion is a no-op.
-	body := "i=0; while [ $i -lt " + strconv.Itoa(sessionDiscoveryAttempts) + " ]; do " +
-		"f=$(ls -t " + qdir + " 2>/dev/null | head -1); " +
-		"if [ -n \"$f\" ]; then " +
-		"b=$(basename \"$f\"); id=\"${b%" + trimSuffix + "}\"; " +
+	// New entries = listing minus snapshot. An unreadable/absent snapshot
+	// means we cannot tell old from new, so fail closed (write nothing).
+	// basename then strips trimSuffix when the engine's file name carries one
+	// (pi's own session file name already IS the id).
+	body := "[ -f " + qsnap + " ] || exit 0; " +
+		"i=0; while [ $i -lt " + strconv.Itoa(sessionDiscoveryAttempts) + " ]; do " +
+		"new=$(ls -1 " + qdir + " 2>/dev/null" + sessionEntryFilter(trimSuffix) + " | grep -vxF -f " + qsnap + "); " +
+		"if [ -n \"$new\" ]; then " +
+		"if [ $(printf '%s\\n' \"$new\" | wc -l) -ne 1 ]; then break; fi; " +
+		"b=$(basename \"$new\"); id=\"${b%" + trimSuffix + "}\"; " +
 		"printf '%s' \"$id\" > " + qtmp + " 2>/dev/null && mv -f " + qtmp + " " + qsidecar + "; " +
 		"break; fi; " +
 		"i=$((i+1)); sleep " + sleepArg() + "; done"
