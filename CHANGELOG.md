@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`process-policy set` changes only the fields it carries** (#2675). A request used to replace the stored policy wholesale, so tuning the mining thresholds wiped the configured action, allowance and TTL (the result depended on the order of two `set` calls) and a lone `--action` dropped the allowance and TTL. An unset action, `throttle_allowance` or `ttl` now keeps its stored value, at the backend default and on a container override; a thresholds-only set on a fresh backend stores no policy.
+||||||| c6bb7b17
 - **The mining-behavior window has a floor: 3 minutes** (#2674). At the 30 s CPU sample cadence a window under about 150 s can never meet the rule's coverage requirement, so it was accepted and then never fired (verified on a live guest: samples=4 coverage=1m30s against 96 s needed for a 2 m window). `process-policy set --rule mining-behavior --window` now rejects windows below `MinMiningWindow`, and a test drives every accepted window on the real cadence.
 ||||||| 26ebc452
 - **THROTTLE is now a hard CPU cap** (#2676). The process responder wrote the policy's `10%` straight to Incus as `limits.cpu.allowance`, which Incus reads as a soft share: on a verified host the kernel `cpu.max` went from a 2-core quota to `max` and the "throttled" box still ran at 2.0 cores. `throttle_allowance` now means N percent of one core and is applied as the hard quota `Nms/100ms` (an explicit `Xms/Yms` is kept), never looser than the box's existing hard cap. Release still restores the recorded limits verbatim. The real-Incus e2e now reads the kernel's `cpu.max`.
