@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Auto-quarantine no longer releases on a `clean` ClamAV verdict** (#2654, part of #2631). The scan is moving inside the tenant's own box (#2631), so its verdict is self-reported and a compromised box could otherwise lift its own quarantine. An `infected` verdict still blocks the tenant's egress (24h TTL, refreshed by each infected scan); release is now by an operator removing the `auto-quarantine: clamav malware` deny rule, or by the TTL. The ClamAV summary counts are documented as self-reported.
 
+### Fixed
+
+- **Correction: v0.107.0 did not restore malware scans** (#2656, part of #2631). The v0.107.0 note that malware scans can read root-only files again was wrong. Running `clamd` as root inside the scanner container does not help, because the tenant rootfs is owned by host root and that user is unmapped in the scanner container's user namespace, so every scan was still recorded `incomplete`. Malware scanning is being rebuilt to run inside the tenant's own box, started by its owner (#2631). The ISO 27001 A.8.7 row is downgraded to Partial, the README no longer lists ClamAV as a platform-wide scan, and `docs/security/SECURITY-FAQ.md` states what the platform does and does not read.
+
 ## [0.107.0] - 2026-10-18
 
 _Malware scans can read root-only files in scanned rootfs (they were all recorded incomplete), threat detection stops counting observation-only denies, a new alertable signal for backup-health read failures, and managed session termination reports ids it cannot map._
