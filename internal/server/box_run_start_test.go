@@ -66,12 +66,11 @@ func boxRunStartServer(t *testing.T, u *fakeBoxUser) (*ContainerServer, string, 
 	}
 	dir := t.TempDir()
 	list := &shBox{}
-	// A pass-through `setsid` for hosts without util-linux's (macOS
-	// developer machines); on Linux it is an equivalent stand-in.
-	shim := t.TempDir()
-	if err := os.WriteFile(filepath.Join(shim, "setsid"), []byte("#!/bin/sh\nexec \"$@\"\n"), 0o755); err != nil { // #nosec G306 -- test shim must be executable
-		t.Fatal(err)
-	}
+	// No `setsid` shim here: StopBoxRun signals the run's PROCESS GROUP and
+	// its ownership check looks for pgid == pid, which only the real
+	// util-linux setsid (a new session per run) provides. A pass-through
+	// shim leaves the run in this test process's group, so every stop would
+	// report the run "gone". Hosts without setsid are skipped above.
 	var startedMu sync.Mutex
 	started := map[string]bool{}
 	s := &ContainerServer{
@@ -86,7 +85,7 @@ func boxRunStartServer(t *testing.T, u *fakeBoxUser) (*ContainerServer, string, 
 			started[username] = true
 			startedMu.Unlock()
 			cmd := exec.Command("sh", "-c", script)
-			cmd.Env = append(os.Environ(), "HOME="+u.home, "PATH="+shim+string(os.PathListSeparator)+os.Getenv("PATH"))
+			cmd.Env = append(os.Environ(), "HOME="+u.home)
 			out, err := cmd.CombinedOutput()
 			if err != nil {
 				if ee, ok := err.(*exec.ExitError); ok {
