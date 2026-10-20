@@ -819,9 +819,17 @@ func (m *Manager) Restore(opts RestoreOptions) error {
 // object store for off-host destinations) and verifies them against the
 // recorded SHA-256. Shared by Restore and Verify so the integrity gate
 // cannot drift between the two paths.
+// Define maximum allowed restore dump size (e.g., 5GB) to prevent OOM memory exhaustion.
+const MaxRestoreBytes = 5 * 1024 * 1024 * 1024
+
+// fetchDump pulls a record's dump bytes to the host (downloading from the
+// object store for off-host destinations) and verifies them against the
+// recorded SHA-256 via streaming with size bounds. Shared by Restore and Verify 
+// so the integrity gate cannot drift between the two paths.
 func (m *Manager) fetchDump(r *Record) ([]byte, error) {
-	var data []byte
-	var err error
+	var filePath string
+	var cleanupTmp func()
+
 	switch r.Destination {
 	case DestGCS:
 		if m.uploader == nil {
@@ -831,22 +839,50 @@ func (m *Manager) fetchDump(r *Record) ([]byte, error) {
 		if err := m.uploader.Download(r.Location, tmp); err != nil {
 			return nil, fmt.Errorf("failed to download %s: %w", r.Location, err)
 		}
-		data, err = os.ReadFile(tmp) // #nosec G304 -- tmp is filepath.Join(m.dir, ...) with a validated record id
-		_ = os.Remove(tmp)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read downloaded dump: %w", err)
-		}
+		filePath = tmp
+		cleanupTmp = func() { _ = os.Remove(tmp) }
 	default:
-		data, err = os.ReadFile(r.Location)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read dump %s: %w", r.Location, err)
-		}
+		filePath = r.Location
 	}
 
-	sum := sha256.Sum256(data)
-	if got := hex.EncodeToString(sum[:]); got != r.SHA256 {
+	if cleanupTmp != nil {
+		defer cleanupTmp()
+	}
+
+	// Open backup dump file for safe streaming read instead of full memory loading.
+	file, err := os.Open(filePath) // #nosec G304 -- filePath is validated internally or tmp with a validated record id
+	if err != nil {
+		return nil, fmt.Errorf("failed to open dump file %s: %w", filePath, err)
+	}
+	defer file.Close()
+
+	// Check file size via Stat to enforce size limits before allocating memory.
+	info, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat dump file: %w", err)
+	}
+
+	if info.Size() > MaxRestoreBytes {
+		return nil, fmt.Errorf("dump file size (%d bytes) exceeds maximum allowed restore limit (%d bytes)", info.Size(), MaxRestoreBytes)
+	}
+
+	// Apply LimitReader to guarantee upper bound protection against memory exhaustion.
+	limitedReader := io.LimitReader(file, MaxRestoreBytes)
+
+	// Compute SHA256 checksum on the fly using TeeReader while reading stream.
+	hasher := sha256.New()
+	teeReader := io.TeeReader(limitedReader, hasher)
+
+	data, err := io.ReadAll(teeReader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read dump stream: %w", err)
+	}
+
+	// Verify cryptographic integrity against recorded SHA-256 hash.
+	if got := hex.EncodeToString(hasher.Sum(nil)); got != r.SHA256 {
 		return nil, fmt.Errorf("dump integrity check failed: sha256 %s != recorded %s (corruption or tampering)", got, r.SHA256)
 	}
+
 	return data, nil
 }
 
