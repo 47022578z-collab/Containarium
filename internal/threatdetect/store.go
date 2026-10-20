@@ -445,7 +445,12 @@ func (s *FindingStore) SetResponse(ctx context.Context, id int64, r FindingRespo
 		UPDATE security_findings
 		SET response = CASE
 			WHEN COALESCE((response->>'process_killed')::boolean, FALSE)
-				THEN $1::jsonb || '{"process_killed": true}'::jsonb
+				AND NOT COALESCE(($1::jsonb->>'process_killed')::boolean, FALSE)
+				THEN $1::jsonb || jsonb_strip_nulls(jsonb_build_object(
+					'process_killed', TRUE,
+					'killed_pid', response->'killed_pid',
+					'kills', response->'kills',
+					'kill_skip_reason', response->'kill_skip_reason'))
 			ELSE $1::jsonb
 		END
 		WHERE id = $2`, string(raw), id)

@@ -300,8 +300,9 @@ so a pid reused by another process, on the host or in another box, is never
 signalled; the container's init is never killed. Every attempt is audited
 under `security.action`: `kill` names the pid, `kill-skipped` gives the
 reason (`pid reused`, `process already exited`, …). The finding's response
-shows `process killed`, and an action row opened by the same finding records
-`killed_pid`. The kill and the throttle/freeze run on the responder's own
+shows `process killed (pid <host pid>, kills <n>)`, or `kill skipped:
+<reason>` when the last attempt did not happen, and an action row opened by
+the same finding records `killed_pid`. The kill and the throttle/freeze run on the responder's own
 worker, never on the exec event path; if its queue (256) is full the
 response is dropped, logged and audited as `response-dropped`. Before
 acting, the worker re-reads the finding and the box's own action for that
@@ -408,6 +409,38 @@ Every delivery attempt (success or failure) is recorded in the same
 `alert.DeliveryStore` the existing relay uses — a dead or slow webhook
 never blocks detection; delivery is downstream of persistence, not the
 hot path.
+
+A finding is delivered when it is new, when its severity escalates, when
+the process responder's response changes, and once more when it
+resolves. A killed process is one of those changes: with
+`process-policy set --kill-process=true`, an `ALERT` policy delivers the
+new finding and then a second post whose `response` names the kill:
+`process_killed: true`, `killed_pid` (the **host** pid that was SIGKILLed,
+not the pid inside the box) and `kills` (how many processes have been
+killed for this finding). `response.state` stays `1`, `NONE`, because
+`ALERT` does nothing else to the box. Under `THROTTLE` or `FREEZE` the
+`APPLIED` post carries the kill.
+
+A miner that respawns is killed again each time, so later kills are
+rate-limited: the first kill is delivered at once, and further kills on
+the same finding at most once a minute, each carrying the latest
+`killed_pid` and the running `kills` count. A kill that lands inside that
+minute is delivered by the finding's next write after it, so the last
+kill of a burst can reach the webhook late. `containarium security
+findings list` always shows the current state: its response line reads
+`response ALERT NONE, process killed (pid 25872, kills 3)` or
+`response THROTTLE APPLIED, kill skipped: CONTAINER_INIT`, and `--json`
+carries `killedPid`, `kills` and `killSkipReason`.
+
+If a kill was attempted and did not happen, `response.kill_skip_reason`
+says why, as a number: `1` PID_REUSED (the pid now belongs to another
+cgroup), `2` PROCESS_GONE (it exited first), `3` CONTAINER_INIT (the box's
+init, never signalled), `4` POLICY_UNREADABLE, `5` OTHER. The first skip is
+delivered at once and a different reason at most once a minute; the pid
+and error detail stay in the audit log (`kill-skipped`), not the webhook.
+`response.state` is a number: `1` NONE, `2` APPLIED, `3` FAILED, `4`
+RELEASED, `5` EXPIRED. Fields that are zero or empty are omitted from the
+JSON.
 
 ## Managing the known-bad-destination list
 

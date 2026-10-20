@@ -142,7 +142,7 @@ func (s *fakeFindings) SetResponse(_ context.Context, id int64, r threatdetect.F
 	s.writes = append(s.writes, r)
 	resp := r
 	// process_killed is sticky, as in both real stores (#2766).
-	resp.ProcessKilled = resp.ProcessKilled || (f.Response != nil && f.Response.ProcessKilled)
+	resp.KeepKillOf(f.Response)
 	f.Response = &resp
 	cp := *f
 	return &cp, nil

@@ -205,7 +205,7 @@ func (s *MemFindingStore) SetResponse(ctx context.Context, id int64, r FindingRe
 		return nil, fmt.Errorf("threatdetect: finding %d: %w", id, ErrFindingNotFound)
 	}
 	cp := r
-	cp.ProcessKilled = cp.ProcessKilled || (f.Response != nil && f.Response.ProcessKilled)
+	cp.KeepKillOf(f.Response)
 	f.Response = &cp
 	// The webhook worker reads its finding after this returns; hand it a
 	// snapshot so a later write to the ring entry (the resolve an operator
