@@ -207,21 +207,34 @@ func wrapNewIdentity(ctx context.Context, wrapper secrets.KMSClient) (recipient 
 	return id.Recipient().String(), wrapped, kekID, nil
 }
 
-// decryptWithIdentity decrypts an age ciphertext with an X25519 identity
-// ("AGE-SECRET-KEY-1…") supplied by the caller for this one call. The
-// identity is never persisted or logged.
-func decryptWithIdentity(ciphertext []byte, identity string) ([]byte, error) {
-	id, err := age.ParseX25519Identity(strings.TrimSpace(identity))
+// decryptWithIdentity streams the decryption of ciphertext using age, writing directly 
+// to a temporary file via io.Copy to prevent memory exhaustion (OOM).
+func decryptWithIdentity(r io.Reader, identity age.Identity) (*os.File, error) {
+	// age.Decrypt returns a streaming reader
+	outReader, err := age.Decrypt(r, identity)
 	if err != nil {
-		return nil, fmt.Errorf("invalid age identity: %w", err)
+		return nil, fmt.Errorf("failed to decrypt: %w", err)
 	}
-	r, err := age.Decrypt(bytes.NewReader(ciphertext), id)
+
+	// Create a secure temporary file to avoid holding plaintexts in memory
+	tmpFile, err := os.CreateTemp("", "backup-decrypt-*")
 	if err != nil {
-		return nil, fmt.Errorf("age decrypt: %w", err)
+		return nil, fmt.Errorf("failed to create temp file: %w", err)
 	}
-	pt, err := io.ReadAll(r)
-	if err != nil {
-		return nil, fmt.Errorf("age decrypt: %w", err)
+
+	// Stream decrypt directly to disk via io.Copy
+	if _, err := io.Copy(tmpFile, outReader); err != nil {
+		tmpFile.Close()
+		_ = os.Remove(tmpFile.Name())
+		return nil, fmt.Errorf("failed to stream decrypt to file: %w", err)
 	}
-	return pt, nil
+
+	// Reset file read pointer to the beginning for subsequent reads
+	if _, err := tmpFile.Seek(0, 0); err != nil {
+		tmpFile.Close()
+		_ = os.Remove(tmpFile.Name())
+		return nil, err
+	}
+
+	return tmpFile, nil
 }
