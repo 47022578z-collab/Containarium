@@ -530,3 +530,40 @@ func TestCreateAll_ListDatabasesFails(t *testing.T) {
 		t.Fatalf("got %d errors, want 1", len(errs))
 	}
 }
+func TestBackupScopedToken_AllowsOwnBackupsOnly(t *testing.T) {
+	tenantA := "tenant-a"
+	tenantB := "tenant-b"
+
+	// Generate a test token bound to tenantA with backups-only scopes
+	token := generateTestToken(tenantA, []string{"backups:read", "backups:write"})
+
+	router := setupTestRouter()
+
+	t.Run("Allowed: Tenant A accesses own backup", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/v1/tenants/"+tenantA+"/backups", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		
+		assert.NotEqual(t, http.StatusUnauthorized, w.Code)
+		assert.NotEqual(t, http.StatusForbidden, w.Code)
+	})
+
+	t.Run("Denied: Tenant A accesses Tenant B backup", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/v1/tenants/"+tenantB+"/backups", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		
+		assert.Equal(t, http.StatusForbidden, w.Code)
+	})
+
+	t.Run("Denied: Tenant A calls non-backup API", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/v1/tenants/"+tenantA+"/containers", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		
+		assert.Equal(t, http.StatusForbidden, w.Code)
+	})
+}
